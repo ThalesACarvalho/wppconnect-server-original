@@ -24,11 +24,12 @@ import { clientsArray, eventEmitter } from './sessionUtil';
 import Factory from './tokenStore/factory';
 
 export default class CreateSessionUtil {
-  startChatWootClient(client: any) {
+  startChatWootClient(client: any, logger?: any) {
     if (client.config.chatWoot && !client._chatWootClient)
       client._chatWootClient = new chatWootClient(
         client.config.chatWoot,
-        client.session
+        client.session,
+        logger
       );
     return client._chatWootClient;
   }
@@ -41,7 +42,29 @@ export default class CreateSessionUtil {
   ) {
     try {
       let client = this.getClient(session) as any;
-      if (client.status != null && client.status !== 'CLOSED') return;
+      
+      // Se a sessão já existe e está ativa, retornar o status atual
+      if (client.status != null && client.status !== 'CLOSED') {
+        // Se waitQrCode foi solicitado e temos um QR Code, enviar na resposta
+        if (res && !res.headersSent && client.status === 'QRCODE' && client.qrcode) {
+          return res.status(200).json({
+            status: 'qrcode',
+            qrcode: client.qrcode,
+            urlcode: client.urlcode,
+            session: client.session,
+          });
+        }
+        // Se já está conectado
+        if (res && !res.headersSent && client.status === 'CONNECTED') {
+          return res.status(200).json({
+            status: 'CONNECTED',
+            session: client.session,
+            message: 'Session already connected',
+          });
+        }
+        return;
+      }
+      
       client.status = 'INITIALIZING';
       client.config = req.body;
 
@@ -52,7 +75,7 @@ export default class CreateSessionUtil {
       // we need this to update phone in config every time session starts, so we can ask for code for it again.
       myTokenStore.setToken(session, tokenData ?? {});
 
-      this.startChatWootClient(client);
+      this.startChatWootClient(client, req.logger);
 
       if (req.serverOptions.customUserDataDir) {
         req.serverOptions.createOptions.puppeteerOptions = {
@@ -191,7 +214,7 @@ export default class CreateSessionUtil {
       session: client.session,
     });
 
-    if (res && !res._headerSent)
+    if (res && !res.headersSent)
       res.status(200).json({
         status: 'phoneCode',
         phone: phone,
@@ -208,14 +231,16 @@ export default class CreateSessionUtil {
     res?: any
   ) {
     eventEmitter.emit(`qrcode-${client.session}`, qrCode, urlCode, client);
+    
+    const qrCodeBase64 = qrCode.replace('data:image/png;base64,', '');
+    
     Object.assign(client, {
       status: 'QRCODE',
-      qrcode: qrCode,
+      qrcode: qrCodeBase64,
       urlcode: urlCode,
     });
 
-    qrCode = qrCode.replace('data:image/png;base64,', '');
-    const imageBuffer = Buffer.from(qrCode, 'base64');
+    const imageBuffer = Buffer.from(qrCodeBase64, 'base64');
 
     req.io.emit('qrCode', {
       data: 'data:image/png;base64,' + imageBuffer.toString('base64'),
@@ -223,17 +248,24 @@ export default class CreateSessionUtil {
     });
 
     callWebHook(client, req, 'qrcode', {
-      qrcode: qrCode,
+      qrcode: qrCodeBase64,
       urlcode: urlCode,
       session: client.session,
     });
-    if (res && !res._headerSent)
-      res.status(200).json({
-        status: 'qrcode',
-        qrcode: qrCode,
-        urlcode: urlCode,
-        session: client.session,
-      });
+    
+    // Sempre enviar resposta HTTP se res foi fornecido e ainda não foi enviado
+    if (res && !res.headersSent) {
+      try {
+        res.status(200).json({
+          status: 'qrcode',
+          qrcode: qrCodeBase64,
+          urlcode: urlCode,
+          session: client.session,
+        });
+      } catch (error) {
+        req.logger?.error('Error sending QR code response:', error);
+      }
+    }
   }
 
   async onParticipantsChanged(req: any, client: any) {

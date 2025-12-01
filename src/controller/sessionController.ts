@@ -236,7 +236,11 @@ export async function startSession(req: Request, res: Response): Promise<any> {
   const session = req.session;
   const { waitQrCode = false } = req.body;
 
-  await getSessionState(req, res);
+  // Se waitQrCode for true, não chamar getSessionState pois ele envia a resposta prematuramente
+  if (!waitQrCode) {
+    await getSessionState(req, res);
+  }
+  
   await SessionUtil.opendata(req, session, waitQrCode ? res : null);
 }
 

@@ -1,7 +1,7 @@
 import { ServerOptions } from './types/ServerOptions';
 
 export default {
-  secretKey: 'THISISMYSECURETOKEN',
+  secretKey: 'Hg84KDlf&27s92k@SDF!lkJ28Sdfn39slkjASD3',
   host: 'http://localhost',
   port: '21465',
   deviceName: 'WppConnect',

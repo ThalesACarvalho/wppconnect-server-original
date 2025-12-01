@@ -30,9 +30,12 @@ export default class chatWootClient {
   declare account_id: any;
   declare inbox_id: any;
   declare api: AxiosInstance;
+  declare logger: any;
 
-  constructor(config: any, session: string) {
+  constructor(config: any, session: string, logger?: any) {
     this.config = config;
+    this.session = session;
+    this.logger = logger;
     this.mobile_name = this.config.mobile_name
       ? this.config.mobile_name
       : `WPPConnect`;
@@ -52,6 +55,16 @@ export default class chatWootClient {
         api_access_token: this.config.token,
       },
     });
+
+    // Log de inicialização do Chatwoot Client
+    this.logInfo(`🔗 Chatwoot Client inicializado para sessão: ${session}`);
+    this.logInfo(`📍 Base URL: ${this.config.baseURL}`);
+    this.logInfo(`🏢 Account ID: ${this.account_id}`);
+    this.logInfo(`📥 Inbox ID: ${this.inbox_id}`);
+    this.logInfo(`📱 Mobile: ${this.mobile_name} (${this.mobile_number})`);
+
+    // Testar conexão com Chatwoot
+    this.testConnection();
 
     //assina o evento do qrcode
     eventEmitter.on(`qrcode-${session}`, (qrCode, urlCode, client) => {
@@ -85,6 +98,72 @@ export default class chatWootClient {
     eventEmitter.on(`mensagem-${session}`, (client, message) => {
       this.sendMessage(client, message);
     });
+  }
+
+  logInfo(message: string) {
+    const logMessage = `[Chatwoot:${this.session}] ${message}`;
+    if (this.logger) {
+      this.logger.info(logMessage);
+    } else {
+      console.log(`ℹ️  ${logMessage}`);
+    }
+  }
+
+  logError(message: string, error?: any) {
+    const logMessage = `[Chatwoot:${this.session}] ${message}`;
+    if (this.logger) {
+      this.logger.error(logMessage, error);
+    } else {
+      console.error(`❌ ${logMessage}`, error || '');
+    }
+  }
+
+  logSuccess(message: string) {
+    const logMessage = `[Chatwoot:${this.session}] ${message}`;
+    if (this.logger) {
+      this.logger.info(logMessage);
+    } else {
+      console.log(`✅ ${logMessage}`);
+    }
+  }
+
+  async testConnection() {
+    try {
+      this.logInfo('🔍 Testando conexão com Chatwoot...');
+      
+      // Tentar buscar informações da conta
+      const { data } = await this.api.get(
+        `api/v1/accounts/${this.account_id}`
+      );
+      
+      this.logSuccess(`✓ Conexão estabelecida com sucesso!`);
+      this.logSuccess(`✓ Conta: ${data.name || 'N/A'}`);
+      this.logSuccess(`✓ Status: Online`);
+      
+      return true;
+    } catch (error: any) {
+      this.logError('✗ Falha ao conectar com Chatwoot');
+      
+      if (error.response) {
+        // Erro de resposta do servidor
+        this.logError(`✗ Status: ${error.response.status}`);
+        this.logError(`✗ Mensagem: ${error.response.data?.message || error.response.statusText}`);
+        
+        if (error.response.status === 401) {
+          this.logError('✗ Token de API inválido ou expirado');
+        } else if (error.response.status === 404) {
+          this.logError('✗ Account ID não encontrado');
+        }
+      } else if (error.request) {
+        // Erro de rede/timeout
+        this.logError('✗ Erro de conexão: Não foi possível alcançar o servidor Chatwoot');
+        this.logError(`✗ Verifique se a URL está correta: ${this.config.baseURL}`);
+      } else {
+        this.logError('✗ Erro desconhecido', error.message);
+      }
+      
+      return false;
+    }
   }
 
   // async sendMessage(client: any, message: any) {
@@ -176,10 +255,19 @@ export default class chatWootClient {
     if (message.isGroupMsg || message.chatId.indexOf('@broadcast') > 0) return;
 
     const contact = await this.createContact(message);
+    if (!contact) {
+      this.logError('✗ Falha ao criar/buscar contato no Chatwoot');
+      return null;
+    }
+
     const conversation = await this.createConversation(
       contact,
       message.chatId.split('@')[0]
     );
+    if (!conversation) {
+      this.logError('✗ Falha ao criar/buscar conversação no Chatwoot');
+      return null;
+    }
 
     try {
       if (
@@ -231,7 +319,8 @@ export default class chatWootClient {
         const endpoint = `api/v1/accounts/${this.account_id}/conversations/${conversation.id}/messages`;
 
         const result = await axios.post(endpoint, data, configPost);
-
+        
+        this.logSuccess(`✓ Mídia enviada para Chatwoot (${message.type}): ${filename}`);
         return result;
       } else {
         const body = {
@@ -241,10 +330,15 @@ export default class chatWootClient {
         const endpoint = `api/v1/accounts/${this.account_id}/conversations/${conversation.id}/messages`;
 
         const { data } = await this.api.post(endpoint, body);
+        
+        this.logSuccess(`✓ Mensagem enviada para Chatwoot`);
         return data;
       }
-    } catch (e) {
-      console.error('Error sending message:', e);
+    } catch (e: any) {
+      this.logError('✗ Erro ao enviar mensagem para Chatwoot', e);
+      if (e.response) {
+        this.logError(`✗ Status: ${e.response.status}`, e.response.data);
+      }
       return null;
     }
   }
@@ -255,8 +349,8 @@ export default class chatWootClient {
         `api/v1/accounts/${this.account_id}/contacts/search/?q=${query}`
       );
       return data;
-    } catch (e) {
-      console.log(e);
+    } catch (e: any) {
+      this.logError(`✗ Erro ao buscar contato: ${query}`, e.message);
       return null;
     }
   }
@@ -273,17 +367,23 @@ export default class chatWootClient {
           : message.sender.id.split('@')[0],
     };
     body.phone_number = `+${body.phone_number}`;
+    
     const contact = await this.findContact(body.phone_number.replace('+', ''));
-    if (contact && contact.meta.count > 0) return contact.payload[0];
+    if (contact && contact.meta.count > 0) {
+      this.logInfo(`✓ Contato encontrado: ${body.name} (${body.phone_number})`);
+      return contact.payload[0];
+    }
 
     try {
+      this.logInfo(`📝 Criando novo contato: ${body.name} (${body.phone_number})`);
       const data = await this.api.post(
         `api/v1/accounts/${this.account_id}/contacts`,
         body
       );
+      this.logSuccess(`✓ Contato criado com sucesso: ${body.name}`);
       return data.data.payload.contact;
-    } catch (e) {
-      console.log(e);
+    } catch (e: any) {
+      this.logError(`✗ Erro ao criar contato: ${body.name}`, e.response?.data || e.message);
       return null;
     }
   }
@@ -296,15 +396,18 @@ export default class chatWootClient {
       return data.payload.find(
         (e: any) => e.inbox_id == this.inbox_id && e.status != 'resolved'
       );
-    } catch (e) {
-      console.log(e);
+    } catch (e: any) {
+      this.logError(`✗ Erro ao buscar conversação do contato ${contact.id}`, e.message);
       return null;
     }
   }
 
   async createConversation(contact: any, source_id: any) {
     const conversation = await this.findConversation(contact);
-    if (conversation) return conversation;
+    if (conversation) {
+      this.logInfo(`✓ Conversação existente encontrada: ID ${conversation.id}`);
+      return conversation;
+    }
 
     const body = {
       source_id: source_id,
@@ -314,13 +417,15 @@ export default class chatWootClient {
     };
 
     try {
+      this.logInfo(`📝 Criando nova conversação para contato ${contact.name}`);
       const { data } = await this.api.post(
         `api/v1/accounts/${this.account_id}/conversations`,
         body
       );
+      this.logSuccess(`✓ Conversação criada com sucesso: ID ${data.id}`);
       return data;
-    } catch (e) {
-      console.log(e);
+    } catch (e: any) {
+      this.logError(`✗ Erro ao criar conversação`, e.response?.data || e.message);
       return null;
     }
   }
